@@ -1,0 +1,157 @@
+// Copyright 2020 Google LLC
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Limited rules execution environment and functions are constrained:
+    // https://firebase.google.com/docs/rules/rules-language#function
+    // https://firebase.google.com/docs/reference/rules/index-all
+    // https://github.com/google/cel-spec/blob/master/doc/langdef.md
+    function quickPad(datePart) {
+      return datePart.size() == 1 ? "0" + datePart : datePart;
+    }
+
+    // Assemble YYYY-MM-DD-HH from timestamp
+    function buildDatePath(t) {
+      return string(t.year()) + '-'
+        + quickPad(string(t.month())) + '-'
+        + quickPad(string(t.day())) + '-'
+        + quickPad(string(t.hours()))
+    }
+
+    // Check date path against timestamp, allowing for clock skew
+    function checkDatePath(datePath, t) {
+      return datePath == buildDatePath(t + duration.value(1, 'h'))
+          || datePath == buildDatePath(t)
+          || datePath == buildDatePath(t - duration.value(1, 'h'));
+    }
+
+    // There are no filter() or map() functions available to us, and recursion
+    // is not allowed, so we have to unroll the check of the list manually.
+    // https://groups.google.com/g/google-cloud-firestore-discuss/c/S9BqqUcR4Lc/m/4CRjqfMyBwAJ
+    function checkCertLengths(chain) {
+      return checkCertLength(chain, 1)
+          && checkCertLength(chain, 2)
+          && checkCertLength(chain, 3)
+          && checkCertLength(chain, 4)
+          && checkCertLength(chain, 5)
+          && checkCertLength(chain, 6)
+          && checkCertLength(chain, 7)
+          && checkCertLength(chain, 8)
+          && checkCertLength(chain, 9)
+          && checkCertLength(chain, 10);
+    }
+
+    // CEL implementations aren't guaranteed to do short circuit evaluation of
+    // logical operators, so we use conditional operators here to avoid out of
+    // bounds exceptions/NPEs.
+    // https://github.com/google/cel-spec/blob/master/doc/langdef.md#logical-operators
+    // Fun times.
+    function checkCertLength(chain, i) {
+      return chain.size() > i ? chain[i].size() < 30000 : true;
+    }
+    function safeCheckSize(s, len) {
+      return s != null ? s.size() < len : true;
+    }
+
+    // Check schema of uploaded document
+    function checkFields(d) {
+      return
+          // Check top level required fields
+          d.payload != null
+          && d.signature != null
+          && d.certificateChain != null
+          // nothing extraneous at top level
+          && d.keys().toSet().hasOnly(['certificateChain', 'signature', 'payload'])
+          // Check `payload` required fields
+          // `uuid`, `created` already enforced elsewhere
+          && d.payload.schemaVersion != null
+          && d.payload.encryptedDataShares != null
+          // TODO: support arbitrary number of servers here
+          && d.payload.encryptedDataShares.size() == 2
+          && d.payload.encryptedDataShares[0].payload != null
+          && d.payload.encryptedDataShares[1].payload != null
+          // check sizes
+          && d.signature.size() < 200
+          && d.certificateChain.size() >= 3
+          && d.certificateChain.size() <= 10
+          && checkCertLengths(d.certificateChain)
+          && d.payload.uuid.size() < 50
+          && safeCheckSize(d.payload.encryptedDataShares[0].encryptionKeyId, 100)
+          && safeCheckSize(d.payload.encryptedDataShares[1].encryptionKeyId, 100)
+          && d.payload.encryptedDataShares[0].payload.size() < 100000
+          && d.payload.encryptedDataShares[1].payload.size() < 100000
+          // nothing extraneous at payload level
+          && d.payload.keys().toSet().hasOnly([
+            'uuid', 'created', 'schemaVersion', 'encryptedDataShares', 'prioParams'
+          ])
+          // share per server
+          && d.payload.encryptedDataShares.size() == d.payload.prioParams.numberServers
+          // Check prioParams required fields
+          && d.payload.prioParams != null
+          && d.payload.prioParams.bins != null
+          && d.payload.prioParams.epsilon != null
+          && d.payload.prioParams.epsilon > 1
+          && d.payload.prioParams.numberServers != null
+          && d.payload.prioParams.prime != null
+          // nothing extraneous at prioParams level
+          && d.payload.prioParams.keys().toSet().hasOnly([
+            'bins', 'epsilon', 'hammingWeight', 'numberServers', 'prime'
+          ]);
+    }
+
+    // Check metric name
+    function checkMetricName(n) {
+      return n in [
+          // Metric for testing
+          'fakeMetric-v1',
+          // Currently supported metrics:
+          // https://github.com/google/exposure-notifications-android/tree/master/app/src/main/java/com/google/android/apps/exposurenotification/privateanalytics/metrics        
+          'CodeVerified-v1',
+          'CodeVerifiedWithReportType14d-v1',
+          'CodeVerifiedWithReportType14d-v2',
+          'DateExposure-v1',
+          'DateExposure-v2',
+          'DateExposure14d-v3',
+          'histogramMetric-v1',
+          'histogramMetric-v2',
+          'KeysUploaded-v1',
+          'KeysUploadedVaccineStatus-v1',
+          'KeysUploadedVaccineStatus-v2',
+          'KeysUploadedVaccineStatus14d-v3',
+          'KeysUploadedWithReportType14d-v1',
+          'KeysUploadedWithReportType14d-v2',
+          'PeriodicExposureNotification-v1',
+          'PeriodicExposureNotification14d-v1',
+          'PeriodicExposureNotification14d-v2',
+          'PeriodicExposureNotification14d-v3',
+          'PeriodicExposureNotificationInteraction-v1',
+          'SecondaryAttack14d-v1',
+          'SecondaryAttack14d-v2'
+      ];
+    }
+
+    match /{top}/{uuid}/{date}/{metricName} {
+      allow create: if request.resource.data.payload.uuid == uuid
+                    && top.matches('uuid[0-9]*')
+                    && request.resource.data.payload.created == request.time
+                    // Don't ingest anything with auth tokens attached
+                    && request.auth == null
+                    && checkDatePath(date, request.resource.data.payload.created)
+                    && checkFields(request.resource.data)
+                    && checkMetricName(metricName);
+    }
+  }
+}

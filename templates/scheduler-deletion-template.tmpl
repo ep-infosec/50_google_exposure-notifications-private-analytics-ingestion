@@ -1,0 +1,17 @@
+{
+  "launchParameter": {
+    "jobName": "${pipeline_name}",
+    "parameters": {%{ if start_time > 0 }
+      "startTime": "${start_time}",%{ endif }%{ if autoscaling_algorithm != "" }
+      "autoscalingAlgorithm": "${autoscaling_algorithm}",%{ endif }
+      "duration":"${window}"
+    },
+    "environment": {
+      "machineType": "${machine_type}",
+      "numWorkers": "${worker_count}",
+      "maxWorkers": "${max_worker_count}",
+      "serviceAccountEmail": "${service_account}"
+    },
+    "containerSpecGcsPath": "gs://enpa-pipeline-specs/deletion-pipeline-${pipeline_version}.json"
+  }
+}
